@@ -24,6 +24,7 @@ target_link_libraries(sceneswitch
     PRIVATE
         fmt::fmt
         spdlog::spdlog
+        tomlplusplus::tomlplusplus
         ${XCB_LIBRARIES}
         ${XCB_EWMH_LIBRARIES}
 )
