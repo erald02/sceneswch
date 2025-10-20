@@ -15,7 +15,7 @@ add_subdirectory(external/spdlog)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(XCB REQUIRED xcb)
-# EWMH utilities (provides xcb_ewmh_* symbols)
+pkg_check_modules(XCB REQUIRED xcb-randr)
 pkg_check_modules(XCB_EWMH REQUIRED xcb-ewmh)
 
 add_executable(sceneswitch src/main.cpp)
