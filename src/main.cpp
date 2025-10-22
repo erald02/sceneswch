@@ -36,14 +36,13 @@ int get_current_desktop(xcb_ewmh_connection_t *ewmh){
 // }
 
 #define GEOM_TO_TOML(g) toml::table{ \
-    {"x", g->x}, {"y", g->y}, {"w", g->width}, {"h", g->height}, \
-    {"depth", g->depth}, {"border_width", g->border_width} \
+    {"x", g->x}, {"y", g->y}, {"w", g->width}, {"h", g->height} \
 }
 
-#define MON_TO_TOML(g) toml::table{ \
-    {"sequence", g->sequence}, {"length", g->length}, {"nMonitors", g->nMonitors}, \
-    {"nOutputs", g->nOutputs} \
+#define NGEOM_TO_TOML(g) toml::table{ \
+    {"x", g.x}, {"y", g.y}, {"w", g.width}, {"h", g.height} \
 }
+
 
 // xcb_atom_t name;
 // uint8_t    primary;
@@ -56,13 +55,14 @@ int get_current_desktop(xcb_ewmh_connection_t *ewmh){
 // uint32_t   width_in_millimeters;
 // uint32_t   height_in_millimeters;
 
-#define O_MON_TO_TOML(g) toml::table{ \
-    {"primary", g->primary}, {"x", g->x}, {"y", g->y}, \
-    {"width", g->width}, {"height", g->height} \
+bool get_frame_extents(xcb_ewmh_connection_t* ewmh, xcb_window_t win,
+    xcb_ewmh_get_extents_reply_t& out) {
+    auto ck = xcb_ewmh_get_frame_extents(ewmh, win);
+    return xcb_ewmh_get_frame_extents_reply(ewmh, ck, &out, nullptr);
 }
 
 
-bool capture_desktop(xcb_connection_t *c, xcb_ewmh_connection_t *ewmh) {
+bool capture_desktop(xcb_connection_t *c, xcb_ewmh_connection_t *ewmh){
     int curr_desktop = get_current_desktop(ewmh);
     toml::array windows;
 
@@ -82,29 +82,64 @@ bool capture_desktop(xcb_connection_t *c, xcb_ewmh_connection_t *ewmh) {
             std::string window_title(reinterpret_cast<const char*>(name_reply.strings), name_reply.strings_len);
             xcb_ewmh_get_utf8_strings_reply_wipe(&name_reply);
             toml::table t;
+            std::cout << window_title << std::endl;
             t.insert("title", window_title);
             t.insert("desktop", static_cast<int64_t>(d));
+        
 
-            auto geom = xcb_get_geometry(c, client_list.windows[i]);
-            xcb_get_geometry_reply_t *wgem = xcb_get_geometry_reply(c, geom, nullptr);
-            // TODO: translate coords to framed rect as they root relative :/ 
-            if (wgem) { t.insert("geom", GEOM_TO_TOML(wgem)); free(wgem); }
+            auto geom_cookie = xcb_get_geometry(c, client_list.windows[i]);
+            auto *wgem = xcb_get_geometry_reply(c, geom_cookie, nullptr);
 
-            auto x = xcb_randr_get_monitors(c, client_list.windows[i],0);
-            auto val = xcb_randr_get_monitors_reply(c, x, nullptr);
-            int idx = 0;
-            if (val) {
-                auto m_iter = xcb_randr_get_monitors_monitors_iterator(val);
-                while (m_iter.rem) {
-                    t.insert(static_cast<char[]>(idx), O_MON_TO_TOML(*&m_iter.data));
-                    // TODO: then find highest overlap and determine monitor
-                    xcb_randr_monitor_info_next(&m_iter);
-                    idx += 1;
+            auto tck = xcb_translate_coordinates(c, client_list.windows[i], wgem->root, 0, 0);
+            auto trep = xcb_translate_coordinates_reply(c, tck, nullptr); // free() this
+
+
+
+            xcb_ewmh_get_extents_reply_t fx{};
+            get_frame_extents(ewmh, client_list.windows[i], fx);
+            if (wgem) { 
+
+                t.insert("geom", GEOM_TO_TOML(wgem));
+
+                int frame_x = trep->dst_x - fx.left;
+                int frame_y = trep->dst_y - fx.top;
+                int frame_w = wgem->width + fx.left + fx.right;
+                int frame_h = wgem->height + fx.top + fx.bottom;
+
+                xcb_get_geometry_reply_t frame_geom = *wgem;
+                frame_geom.x = frame_x;
+                frame_geom.y = frame_y;
+                frame_geom.width = frame_w;
+                frame_geom.height = frame_h;
+
+                t.insert("geom_abs", NGEOM_TO_TOML(frame_geom));
+                auto x = xcb_randr_get_monitors(c, wgem->root,0);
+                auto val = xcb_randr_get_monitors_reply(c, x, nullptr);
+                int idx = 0;
+                if (val) {
+                    auto m_iter = xcb_randr_get_monitors_monitors_iterator(val);
+                    std::cout << "Here?" << std::endl;
+                    while (m_iter.rem) {
+                        std::cout << *&m_iter.data->x << std::endl;
+                        std::cout << *&m_iter.data->y << std::endl;
+                        std::cout << *&m_iter.data->name << std::endl;
+                        if ((*&m_iter.data->x <= frame_geom.x && frame_geom.x <= *&m_iter.data->x + *&m_iter.data->x + *&m_iter.data->width) && \
+                            (*&m_iter.data->y <= frame_geom.y && frame_geom.y <= *&m_iter.data->y + *&m_iter.data->y + *&m_iter.data->height)) {
+                                auto an = xcb_get_atom_name(c, *&m_iter.data->name);
+                                auto ar = xcb_get_atom_name_reply(c, an, nullptr);
+                                std::string mon_name(reinterpret_cast<char*>(xcb_get_atom_name_name(ar)),
+                                                    xcb_get_atom_name_name_length(ar));
+                                free(ar);
+                                t.insert("monitor", mon_name);
+                                break;
+                        };
+                        xcb_randr_monitor_info_next(&m_iter);
+                        idx += 1;
+                    }
+                    free(val);
                 }
-                t.insert("moni", MON_TO_TOML(val));
-                free(val);
+                free(wgem); 
             }
-
             windows.push_back(std::move(t));
         }
         toml::table root;
@@ -118,7 +153,9 @@ bool capture_desktop(xcb_connection_t *c, xcb_ewmh_connection_t *ewmh) {
 int main() {
     std::cout << "Connecting" << std::endl;
     xcb_connection_t *c = xcb_connect(nullptr, &SCREEN_N);
+    std::cout << "Checking" << std::endl;
     if (xcb_connection_has_error(c)) return 1;
+    std::cout << "Connected" << std::endl;
     xcb_screen_t *s = xcb_setup_roots_iterator(xcb_get_setup(c)).data;
 
     xcb_ewmh_connection_t ewmh;
@@ -127,7 +164,7 @@ int main() {
         std::cerr << "Failed to initialize EWMH atoms" << std::endl;
         return 1;
     }
-
+    fmt::print("Capturing desktop");
     capture_desktop(c, &ewmh);
     xcb_disconnect(c);
     return 0;
