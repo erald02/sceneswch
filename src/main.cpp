@@ -15,6 +15,42 @@ extern "C" {
 int SCREEN_N = 0;
 constexpr uint32_t ALL_DESKTOPS = 0xFFFFFFFF;
 
+
+struct Monitor {
+    std::string name;
+    int16_t x, y;
+    uint16_t w, h;
+    bool primary;
+};
+
+std::vector<Monitor> load_monitors(xcb_connection_t* c, xcb_screen_t* s) {
+    auto x = xcb_randr_get_monitors(c, s->root,0);
+    auto val = xcb_randr_get_monitors_reply(c, x, nullptr);
+    std::vector<Monitor> arr;
+    if (val) {
+        auto m_iter = xcb_randr_get_monitors_monitors_iterator(val);
+        while (m_iter.rem) {
+            Monitor mon;
+            mon.name = *&m_iter.data->name;
+            mon.x = *&m_iter.data->x;
+            mon.y = *&m_iter.data->y;
+            mon.w = *&m_iter.data->width;
+            mon.h = *&m_iter.data->height;
+            arr.push_back(mon);
+            xcb_randr_monitor_info_next(&m_iter);
+        }
+        free(val);
+    }
+    return arr;
+}
+
+
+const Monitor* pick_monitor(const std::vector<Monitor>& mons,
+    int frame_x, int frame_y, int frame_w, int frame_h) {
+        // TODO: find mon
+}
+
+
 int get_number_of_desktops(xcb_ewmh_connection_t *ewmh){
     auto num_of_ds = xcb_ewmh_get_number_of_desktops(ewmh, SCREEN_N);
     uint32_t num_of_desktops;
@@ -62,9 +98,11 @@ bool get_frame_extents(xcb_ewmh_connection_t* ewmh, xcb_window_t win,
 }
 
 
-bool capture_desktop(xcb_connection_t *c, xcb_ewmh_connection_t *ewmh){
+bool capture_desktop(xcb_connection_t *c, xcb_ewmh_connection_t *ewmh, xcb_screen_t* s){
     int curr_desktop = get_current_desktop(ewmh);
     toml::array windows;
+
+    auto monitors = load_monitors(c, s);
 
     auto nc_cookie = xcb_ewmh_get_client_list(ewmh, SCREEN_N);
     xcb_ewmh_get_windows_reply_t client_list;
@@ -90,10 +128,12 @@ bool capture_desktop(xcb_connection_t *c, xcb_ewmh_connection_t *ewmh){
             auto geom_cookie = xcb_get_geometry(c, client_list.windows[i]);
             auto *wgem = xcb_get_geometry_reply(c, geom_cookie, nullptr);
 
+            if (!wgem) continue;
+
             auto tck = xcb_translate_coordinates(c, client_list.windows[i], wgem->root, 0, 0);
-            auto trep = xcb_translate_coordinates_reply(c, tck, nullptr); // free() this
+            auto trep = xcb_translate_coordinates_reply(c, tck, nullptr); 
 
-
+            if (!trep) { free(wgem); continue; }
 
             xcb_ewmh_get_extents_reply_t fx{};
             get_frame_extents(ewmh, client_list.windows[i], fx);
@@ -113,32 +153,9 @@ bool capture_desktop(xcb_connection_t *c, xcb_ewmh_connection_t *ewmh){
                 frame_geom.height = frame_h;
 
                 t.insert("geom_abs", NGEOM_TO_TOML(frame_geom));
-                auto x = xcb_randr_get_monitors(c, wgem->root,0);
-                auto val = xcb_randr_get_monitors_reply(c, x, nullptr);
-                int idx = 0;
-                if (val) {
-                    auto m_iter = xcb_randr_get_monitors_monitors_iterator(val);
-                    std::cout << "Here?" << std::endl;
-                    while (m_iter.rem) {
-                        std::cout << *&m_iter.data->x << std::endl;
-                        std::cout << *&m_iter.data->y << std::endl;
-                        std::cout << *&m_iter.data->name << std::endl;
-                        if ((*&m_iter.data->x <= frame_geom.x && frame_geom.x <= *&m_iter.data->x + *&m_iter.data->x + *&m_iter.data->width) && \
-                            (*&m_iter.data->y <= frame_geom.y && frame_geom.y <= *&m_iter.data->y + *&m_iter.data->y + *&m_iter.data->height)) {
-                                auto an = xcb_get_atom_name(c, *&m_iter.data->name);
-                                auto ar = xcb_get_atom_name_reply(c, an, nullptr);
-                                std::string mon_name(reinterpret_cast<char*>(xcb_get_atom_name_name(ar)),
-                                                    xcb_get_atom_name_name_length(ar));
-                                free(ar);
-                                t.insert("monitor", mon_name);
-                                break;
-                        };
-                        xcb_randr_monitor_info_next(&m_iter);
-                        idx += 1;
-                    }
-                    free(val);
-                }
-                free(wgem); 
+
+                auto* mon = pick_monitor(monitors, frame_x, frame_y, frame_w, frame_h);
+                if (mon) t.insert("monitor", mon->name);
             }
             windows.push_back(std::move(t));
         }
@@ -165,7 +182,7 @@ int main() {
         return 1;
     }
     fmt::print("Capturing desktop");
-    capture_desktop(c, &ewmh);
+    capture_desktop(c, &ewmh, s);
     xcb_disconnect(c);
     return 0;
 }
