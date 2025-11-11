@@ -1,7 +1,4 @@
 #include "fmt/base.h"
-#include <cstddef>
-#include <cstring>
-#include <iterator>
 #include <string>
 #include <xcb/xproto.h>
 extern "C" {
@@ -23,6 +20,16 @@ struct Monitor {
     bool primary;
 };
 
+std::string atom_name(xcb_connection_t* c, xcb_atom_t atom) {
+    auto ck = xcb_get_atom_name(c, atom);
+    xcb_get_atom_name_reply_t* rep = xcb_get_atom_name_reply(c, ck, nullptr);
+    if (!rep) return {};
+    std::string name(reinterpret_cast<char*>(xcb_get_atom_name_name(rep)),
+                     xcb_get_atom_name_name_length(rep));
+    free(rep);
+    return name;
+}
+
 std::vector<Monitor> load_monitors(xcb_connection_t* c, xcb_screen_t* s) {
     auto x = xcb_randr_get_monitors(c, s->root,0);
     auto val = xcb_randr_get_monitors_reply(c, x, nullptr);
@@ -31,7 +38,7 @@ std::vector<Monitor> load_monitors(xcb_connection_t* c, xcb_screen_t* s) {
         auto m_iter = xcb_randr_get_monitors_monitors_iterator(val);
         while (m_iter.rem) {
             Monitor mon;
-            mon.name = *&m_iter.data->name;
+            mon.name = atom_name(c, *&m_iter.data->name);
             mon.x = *&m_iter.data->x;
             mon.y = *&m_iter.data->y;
             mon.w = *&m_iter.data->width;
@@ -47,7 +54,13 @@ std::vector<Monitor> load_monitors(xcb_connection_t* c, xcb_screen_t* s) {
 
 const Monitor* pick_monitor(const std::vector<Monitor>& mons,
     int frame_x, int frame_y, int frame_w, int frame_h) {
-        // TODO: find mon
+        for( const auto& mon : mons){
+            if((mon.x <= frame_x && frame_x < (mon.x + mon.w)) & 
+            (mon.y <= frame_y && frame_y < (mon.y + mon.h))){
+                return &mon;
+            }
+        }
+        return nullptr;
 }
 
 
@@ -67,9 +80,6 @@ int get_current_desktop(xcb_ewmh_connection_t *ewmh){
     return static_cast<int>(cur);
 }
 
-// std::string p_from_pid(int pid){
-
-// }
 
 #define GEOM_TO_TOML(g) toml::table{ \
     {"x", g->x}, {"y", g->y}, {"w", g->width}, {"h", g->height} \
@@ -79,17 +89,6 @@ int get_current_desktop(xcb_ewmh_connection_t *ewmh){
     {"x", g.x}, {"y", g.y}, {"w", g.width}, {"h", g.height} \
 }
 
-
-// xcb_atom_t name;
-// uint8_t    primary;
-// uint8_t    automatic;
-// uint16_t   nOutput;
-// int16_t    x;
-// int16_t    y;
-// uint16_t   width;
-// uint16_t   height;
-// uint32_t   width_in_millimeters;
-// uint32_t   height_in_millimeters;
 
 bool get_frame_extents(xcb_ewmh_connection_t* ewmh, xcb_window_t win,
     xcb_ewmh_get_extents_reply_t& out) {
@@ -123,7 +122,14 @@ bool capture_desktop(xcb_connection_t *c, xcb_ewmh_connection_t *ewmh, xcb_scree
             std::cout << window_title << std::endl;
             t.insert("title", window_title);
             t.insert("desktop", static_cast<int64_t>(d));
-        
+
+
+            // TODO: done reuse previous pid if unknown, find out out to get stuf ffor zen
+            auto ph = xcb_ewmh_get_wm_pid(ewmh, client_list.windows[i]);
+            uint32_t pidreply;
+            xcb_ewmh_get_wm_pid_reply(ewmh, ph, &pidreply, nullptr);
+            t.insert("pid", pidreply);
+
 
             auto geom_cookie = xcb_get_geometry(c, client_list.windows[i]);
             auto *wgem = xcb_get_geometry_reply(c, geom_cookie, nullptr);
